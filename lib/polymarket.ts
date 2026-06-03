@@ -89,6 +89,20 @@ export async function fetchTags(): Promise<Tag[]> {
   return data ?? [];
 }
 
+// Tag IDs confirmed via /api/debug on the live Gamma API
+const WC_TAG_IDS = new Set(['102232', '102350']); // "FIFA World Cup", "2026 FIFA World Cup"
+const WC_TAG_SLUGS = /2026.fifa|fifa.world.cup/i;
+
+function isWorldCupItem(market: Market): boolean {
+  if (market.tags && market.tags.length > 0) {
+    return market.tags.some(
+      (t) => WC_TAG_IDS.has(String(t.id)) || WC_TAG_SLUGS.test(t.slug),
+    );
+  }
+  // No tags on record: accept only if the title clearly mentions the World Cup
+  return /world.cup|mundial|fifa/i.test(market.question);
+}
+
 export async function findWorldCupTagIds(): Promise<string[]> {
   const tags = await fetchTags();
   const wc = tags.filter(
@@ -129,18 +143,19 @@ export function eventToMarket(raw: Record<string, unknown>): Market {
     ? (raw.markets as Record<string, unknown>[]).map(parseMarket)
     : [];
 
+  const eventTags = (raw.tags as Tag[] | undefined) ?? [];
+
   if (subMarkets.length === 1) {
-    // Single-market event: just return the inner market but keep event slug
     return {
       ...subMarkets[0],
       slug: String(raw.slug ?? subMarkets[0].slug),
+      tags: eventTags,
       isEvent: true,
     };
   }
 
   if (subMarkets.length === 0) {
-    // No markets nested — parse the event itself as if it were a market
-    return { ...parseMarket(raw), isEvent: true };
+    return { ...parseMarket(raw), tags: eventTags, isEvent: true };
   }
 
   // Multi-market event: build a synthetic multi-outcome market
@@ -175,6 +190,7 @@ export function eventToMarket(raw: Record<string, unknown>): Market {
     image: raw.image ? String(raw.image) : undefined,
     icon: raw.icon ? String(raw.icon) : undefined,
     parsedTokenIds,
+    tags: eventTags,
     category: detectCategory(String(raw.title ?? raw.question ?? '')),
     isEvent: true,
   };
@@ -251,7 +267,9 @@ export async function getWorldCupMarkets(): Promise<Market[]> {
     }
   }
 
-  return allMarkets.sort((a, b) => b.volume - a.volume);
+  return allMarkets
+    .filter(isWorldCupItem)
+    .sort((a, b) => b.volume - a.volume);
 }
 
 export async function getMarketBySlug(slug: string): Promise<Market | null> {
