@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import type { Market, PriceHistoryPoint, Orderbook } from '@/lib/types';
+import { useState, useEffect, useMemo } from 'react';
+import type { Market, PriceHistoryPoint } from '@/lib/types';
 import { usePricePolling } from '@/lib/hooks';
 import ProbabilityBar from './ProbabilityBar';
-import PriceChart from './PriceChart';
+import PriceChart, { type PriceSeries } from './PriceChart';
+
+const CHART_OUTCOMES = 5;
 
 function formatVolume(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
@@ -17,44 +19,68 @@ interface Props {
 }
 
 export default function MarketDetailClient({ market }: Props) {
-  const [history, setHistory] = useState<PriceHistoryPoint[]>([]);
-  const [orderbook, setOrderbook] = useState<Orderbook | null>(null);
+  const [series, setSeries] = useState<PriceSeries[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
+  const isMultiOutcome = market.outcomes.length > 2;
   const tokenIds = market.parsedTokenIds ?? [];
   const { prices, flashing, lastUpdated } = usePricePolling(tokenIds, 10000);
 
-  // Fetch price history for the first (Yes) token
+  // Current prices: live if available, else from API response
+  const currentPrices = market.outcomes.map((_, i) => {
+    const tid = market.parsedTokenIds?.[i];
+    return tid && prices[tid] !== undefined
+      ? prices[tid]
+      : parseFloat(market.outcomePrices[i] ?? '0');
+  });
+
+  // Pick which outcomes to chart — stable (based on initial API prices, not live)
+  const chartTargets = useMemo(() => {
+    const rows = market.outcomes.map((outcome, i) => ({
+      outcome,
+      tokenId: market.parsedTokenIds?.[i] ?? '',
+      price: parseFloat(market.outcomePrices[i] ?? '0'),
+    }));
+
+    if (!isMultiOutcome) {
+      // Binary: just show the Yes/first outcome
+      return rows.slice(0, 1).filter((r) => r.tokenId);
+    }
+
+    // Multi: top N by current probability
+    return rows
+      .filter((r) => r.tokenId)
+      .sort((a, b) => b.price - a.price)
+      .slice(0, CHART_OUTCOMES);
+  // market props are stable (server-rendered, never mutate)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [market.id]);
+
   useEffect(() => {
-    const mainToken = tokenIds[0];
-    if (!mainToken) {
+    if (!chartTargets.length) {
       setLoadingHistory(false);
       return;
     }
-    fetch(`/api/history?tokenId=${encodeURIComponent(mainToken)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) setHistory(data as PriceHistoryPoint[]);
+    setLoadingHistory(true);
+
+    Promise.allSettled(
+      chartTargets.map(({ tokenId }) =>
+        fetch(`/api/history?tokenId=${encodeURIComponent(tokenId)}`)
+          .then((r) => (r.ok ? r.json() : []))
+          .then((d) => (Array.isArray(d) ? (d as PriceHistoryPoint[]) : [])),
+      ),
+    )
+      .then((results) => {
+        setSeries(
+          chartTargets.map(({ outcome }, i) => ({
+            outcome,
+            data:
+              results[i].status === 'fulfilled' ? results[i].value : [],
+          })),
+        );
       })
-      .catch(() => {})
       .finally(() => setLoadingHistory(false));
-  }, [tokenIds[0]]);
-
-  // Fetch orderbook
-  useEffect(() => {
-    const mainToken = tokenIds[0];
-    if (!mainToken) return;
-    fetch(`/api/price?tokenId=${encodeURIComponent(mainToken)}`)
-      .then((r) => r.json())
-      .catch(() => {});
-  }, [tokenIds[0]]);
-
-  // Build current prices array for outcomes
-  const currentPrices = market.outcomes.map((_, i) => {
-    const tokenId = market.parsedTokenIds?.[i];
-    if (tokenId && prices[tokenId] !== undefined) return prices[tokenId];
-    return parseFloat(market.outcomePrices[i] ?? '0');
-  });
+  }, [chartTargets]);
 
   const endDate = market.endDate
     ? new Date(market.endDate).toLocaleDateString('es-AR', {
@@ -64,13 +90,13 @@ export default function MarketDetailClient({ market }: Props) {
       })
     : null;
 
-  const isBinary =
-    market.outcomes.length === 2 &&
-    ['Yes', 'No', 'Sí', 'No'].includes(market.outcomes[0]);
+  // Show "Otros" line when we're not displaying all outcomes
+  const showOthers =
+    isMultiOutcome && chartTargets.length < market.outcomes.length;
 
   return (
     <div className="space-y-8">
-      {/* Stats row */}
+      {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <div className="bg-white border border-gray-200 rounded-xl p-4">
           <p className="text-xs text-gray-500 mb-0.5">Volumen total</p>
@@ -92,7 +118,7 @@ export default function MarketDetailClient({ market }: Props) {
         )}
       </div>
 
-      {/* Outcomes */}
+      {/* Probabilities */}
       <div className="bg-white border border-gray-200 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-gray-900">Probabilidades</h2>
@@ -117,16 +143,21 @@ export default function MarketDetailClient({ market }: Props) {
 
       {/* Price chart */}
       <div className="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="font-semibold text-gray-900 mb-4">
-          Evolución de probabilidad
-        </h2>
+        <div className="flex items-baseline justify-between mb-4">
+          <h2 className="font-semibold text-gray-900">
+            Evolución de probabilidad
+          </h2>
+          {isMultiOutcome && (
+            <span className="text-xs text-gray-400">
+              Top {chartTargets.length}
+              {showOthers ? ' + Otros' : ''}
+            </span>
+          )}
+        </div>
         {loadingHistory ? (
-          <div className="h-48 bg-gray-50 rounded-lg animate-pulse" />
+          <div className="h-56 bg-gray-50 rounded-lg animate-pulse" />
         ) : (
-          <PriceChart
-            data={history}
-            outcome={isBinary ? market.outcomes[0] : 'Probabilidad'}
-          />
+          <PriceChart series={series} withOthers={showOthers} />
         )}
       </div>
 
