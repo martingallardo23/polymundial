@@ -1,26 +1,26 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-geist);
+  --color-background: #f9fafb;
+  --color-foreground: #111827;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist, system-ui, sans-serif);
+}
+
+/* Smooth price update flash */
+@keyframes price-flash {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  40% {
+    background-color: rgb(209 250 229); /* emerald-100 */
+  }
+}
+
+.price-flash {
+  animation: price-flash 0.9s ease-in-out;
 }
