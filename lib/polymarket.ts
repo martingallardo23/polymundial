@@ -92,15 +92,17 @@ export async function fetchTags(): Promise<Tag[]> {
 // Tag IDs confirmed via /api/debug on the live Gamma API
 const WC_TAG_IDS = new Set(['102232', '102350']); // "FIFA World Cup", "2026 FIFA World Cup"
 const WC_TAG_SLUGS = /2026.fifa|fifa.world.cup/i;
+// Title regex — catches markets tagged only with Soccer (100350) but about the WC
+const WC_TITLE = /world.cup|mundial|(fifa|2026).*(cup|world)|(cup|world).*(fifa|2026)/i;
 
 function isWorldCupItem(market: Market): boolean {
-  if (market.tags && market.tags.length > 0) {
-    return market.tags.some(
-      (t) => WC_TAG_IDS.has(String(t.id)) || WC_TAG_SLUGS.test(t.slug),
-    );
+  // Explicit World Cup tag → always pass
+  if (market.tags?.some((t) => WC_TAG_IDS.has(String(t.id)) || WC_TAG_SLUGS.test(t.slug))) {
+    return true;
   }
-  // No tags on record: accept only if the title clearly mentions the World Cup
-  return /world.cup|mundial|fifa/i.test(market.question);
+  // No WC-specific tag: accept if title clearly refers to the World Cup
+  // (covers markets tagged only with Soccer/Sports but still WC-related)
+  return WC_TITLE.test(market.question);
 }
 
 export async function findWorldCupTagIds(): Promise<string[]> {
@@ -205,17 +207,29 @@ export async function getWorldCupMarkets(): Promise<Market[]> {
   const eventFetches: Promise<Response>[] = [];
   const marketFetches: Promise<Response>[] = [];
 
+  // Queries by specific WC tag IDs
   for (const id of tagIds) {
     eventFetches.push(fetch(`${GAMMA_BASE}/events?${base}&tag_id=${id}`, opts));
     marketFetches.push(fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${id}`, opts));
   }
 
-  // Text search as fallback (catches anything the tag might miss)
+  // Soccer tag (100350) + WC text — catches events tagged only as Soccer
+  const SOCCER_TAG = '100350';
   eventFetches.push(
-    fetch(`${GAMMA_BASE}/events?${base}&q=FIFA+World+Cup+2026`, opts),
+    fetch(`${GAMMA_BASE}/events?${base}&tag_id=${SOCCER_TAG}&q=World+Cup`, opts),
+    fetch(`${GAMMA_BASE}/events?${base}&tag_id=${SOCCER_TAG}&q=FIFA+2026`, opts),
   );
   marketFetches.push(
-    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup+2026`, opts),
+    fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${SOCCER_TAG}&q=World+Cup`, opts),
+    fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${SOCCER_TAG}&q=FIFA+2026`, opts),
+  );
+
+  // Pure text search as final fallback
+  eventFetches.push(
+    fetch(`${GAMMA_BASE}/events?${base}&q=2026+FIFA+World+Cup`, opts),
+  );
+  marketFetches.push(
+    fetch(`${GAMMA_BASE}/markets?${base}&q=2026+FIFA+World+Cup`, opts),
   );
 
   const [eventResults, marketResults] = await Promise.all([
