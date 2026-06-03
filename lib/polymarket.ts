@@ -89,15 +89,22 @@ export async function fetchTags(): Promise<Tag[]> {
   return data ?? [];
 }
 
-export async function findWorldCupTag(): Promise<Tag | null> {
+export async function findWorldCupTagIds(): Promise<string[]> {
   const tags = await fetchTags();
-  return (
-    tags.find(
-      (t) =>
-        /world.cup|fifa.*cup|mundial/i.test(t.slug) ||
-        /world.cup|fifa.*cup|mundial/i.test(t.label),
-    ) ?? null
+  const wc = tags.filter(
+    (t) =>
+      /2026.fifa.world.cup|fifa.world.cup/i.test(t.slug) ||
+      /2026.fifa.world.cup|fifa.world.cup/i.test(t.label),
   );
+  // Also accept the broader "world cup" slug as fallback
+  if (wc.length === 0) {
+    const fallback = tags.find(
+      (t) =>
+        /world.cup|mundial/i.test(t.slug) || /world.cup|mundial/i.test(t.label),
+    );
+    if (fallback) wc.push(fallback);
+  }
+  return wc.map((t) => String(t.id));
 }
 
 function extractOutcomeLabel(raw: Record<string, unknown>): string {
@@ -174,32 +181,25 @@ export function eventToMarket(raw: Record<string, unknown>): Market {
 }
 
 export async function getWorldCupMarkets(): Promise<Market[]> {
-  const tag = await findWorldCupTag();
+  const tagIds = await findWorldCupTagIds();
 
   const opts = { next: { revalidate: 60 } };
   const base = 'active=true&closed=false&limit=100&order=volume&ascending=false';
 
-  // Events first — they group multi-team markets correctly
   const eventFetches: Promise<Response>[] = [];
   const marketFetches: Promise<Response>[] = [];
 
-  if (tag) {
-    eventFetches.push(
-      fetch(`${GAMMA_BASE}/events?${base}&tag_id=${tag.id}`, opts),
-      fetch(`${GAMMA_BASE}/events?${base}&_tag_id=${tag.id}`, opts),
-    );
-    marketFetches.push(
-      fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${tag.id}`, opts),
-    );
+  for (const id of tagIds) {
+    eventFetches.push(fetch(`${GAMMA_BASE}/events?${base}&tag_id=${id}`, opts));
+    marketFetches.push(fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${id}`, opts));
   }
 
+  // Text search as fallback (catches anything the tag might miss)
   eventFetches.push(
-    fetch(`${GAMMA_BASE}/events?${base}&q=World+Cup+2026`, opts),
-    fetch(`${GAMMA_BASE}/events?${base}&q=FIFA+World+Cup`, opts),
+    fetch(`${GAMMA_BASE}/events?${base}&q=FIFA+World+Cup+2026`, opts),
   );
   marketFetches.push(
-    fetch(`${GAMMA_BASE}/markets?${base}&q=World+Cup+2026`, opts),
-    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup`, opts),
+    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup+2026`, opts),
   );
 
   const [eventResults, marketResults] = await Promise.all([

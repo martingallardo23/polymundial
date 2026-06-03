@@ -1,7 +1,7 @@
 export type MarketCategory = 'champion' | 'match' | 'goalscorer' | 'group' | 'other';
 
 export interface Tag {
-  id: number;
+  id: number | string;
   label: string;
   slug: string;
 }
