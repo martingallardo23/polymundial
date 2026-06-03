@@ -4,43 +4,41 @@ export const dynamic = 'force-dynamic';
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 
-export async function GET() {
-  const [tagsRes, sampleRes] = await Promise.allSettled([
-    fetch(`${GAMMA_BASE}/tags?limit=200`),
-    fetch(`${GAMMA_BASE}/markets?limit=3&order=volume&ascending=false`),
+async function safeGet(url: string) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return { error: `HTTP ${r.status}`, url };
+    return r.json();
+  } catch (e) {
+    return { error: String(e), url };
+  }
+}
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const mode = searchParams.get('mode') ?? 'event';
+
+  if (mode === 'tags') {
+    const tags = await safeGet(`${GAMMA_BASE}/tags?limit=200`);
+    return NextResponse.json(tags);
+  }
+
+  if (mode === 'search') {
+    const q = searchParams.get('q') ?? 'world cup';
+    const [markets, events] = await Promise.all([
+      safeGet(`${GAMMA_BASE}/markets?limit=5&order=volume&ascending=false&q=${encodeURIComponent(q)}`),
+      safeGet(`${GAMMA_BASE}/events?limit=5&order=volume&ascending=false&q=${encodeURIComponent(q)}`),
+    ]);
+    return NextResponse.json({ markets, events });
+  }
+
+  // Default: fetch the world-cup-winner event and nearby events
+  const slug = searchParams.get('slug') ?? 'world-cup-winner';
+  const [bySlug, bySearch, topMarkets] = await Promise.all([
+    safeGet(`${GAMMA_BASE}/events?slug=${slug}`),
+    safeGet(`${GAMMA_BASE}/events?limit=20&order=volume&ascending=false&q=world+cup`),
+    safeGet(`${GAMMA_BASE}/markets?limit=10&order=volume&ascending=false&q=world+cup`),
   ]);
 
-  const tags =
-    tagsRes.status === 'fulfilled' && tagsRes.value.ok
-      ? await tagsRes.value.json()
-      : { error: 'failed' };
-
-  const sampleMarket =
-    sampleRes.status === 'fulfilled' && sampleRes.value.ok
-      ? await sampleRes.value.json()
-      : { error: 'failed' };
-
-  // Filter tags that look World Cup related
-  const wcTags = Array.isArray(tags)
-    ? tags.filter((t: { label: string; slug: string }) =>
-        /world.cup|fifa|mundial|soccer|football|sport/i.test(t.slug) ||
-        /world.cup|fifa|mundial|soccer|football|sport/i.test(t.label),
-      )
-    : [];
-
-  return NextResponse.json({
-    totalTags: Array.isArray(tags) ? tags.length : 0,
-    wcRelatedTags: wcTags,
-    allTags: tags,
-    sampleMarketFields: Array.isArray(sampleMarket)
-      ? sampleMarket.map((m: Record<string, unknown>) => ({
-          question: m.question,
-          tags: m.tags,
-          volume: m.volume,
-          volumeNum: m.volumeNum,
-          active: m.active,
-          closed: m.closed,
-        }))
-      : sampleMarket,
-  });
+  return NextResponse.json({ bySlug, bySearch, topMarkets });
 }
