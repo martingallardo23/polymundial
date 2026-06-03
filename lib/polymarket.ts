@@ -39,6 +39,18 @@ export function parseMarket(raw: Record<string, unknown>): Market {
     parsedTokenIds = rawIds.map(String);
   }
 
+  // volume can come as string or number, and field name varies
+  const rawVolume =
+    raw.volume ?? raw.volumeNum ?? raw.usdcVolume ?? 0;
+  const volume = typeof rawVolume === 'string'
+    ? parseFloat(rawVolume) || 0
+    : Number(rawVolume) || 0;
+
+  const rawLiquidity = raw.liquidity ?? raw.liquidityNum ?? 0;
+  const liquidity = typeof rawLiquidity === 'string'
+    ? parseFloat(rawLiquidity) || 0
+    : Number(rawLiquidity) || 0;
+
   return {
     id: String(raw.id ?? ''),
     question: String(raw.question ?? ''),
@@ -47,8 +59,8 @@ export function parseMarket(raw: Record<string, unknown>): Market {
     clobTokenIds: String(raw.clobTokenIds ?? '[]'),
     outcomes,
     outcomePrices,
-    volume: Number(raw.volume ?? 0),
-    liquidity: Number(raw.liquidity ?? 0),
+    volume,
+    liquidity,
     endDate: String(raw.endDate ?? ''),
     active: Boolean(raw.active),
     closed: Boolean(raw.closed),
@@ -91,46 +103,56 @@ export async function findWorldCupTag(): Promise<Tag | null> {
 export async function getWorldCupMarkets(): Promise<Market[]> {
   const tag = await findWorldCupTag();
 
+  const opts = { next: { revalidate: 60 } };
+  // Ask the API to sort by volume so first pages are the most traded
+  const base = 'active=true&closed=false&limit=100&order=volume&ascending=false';
   const fetches: Promise<Response>[] = [];
 
   if (tag) {
+    // Try several tag parameter names — Gamma API isn't consistent across versions
     fetches.push(
-      fetch(
-        `${GAMMA_BASE}/markets?active=true&closed=false&limit=100&tag_id=${tag.id}`,
-        { next: { revalidate: 60 } },
-      ),
-      fetch(
-        `${GAMMA_BASE}/markets?active=true&closed=false&limit=100&tag_slug=${tag.slug}`,
-        { next: { revalidate: 60 } },
-      ),
+      fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${tag.id}`, opts),
+      fetch(`${GAMMA_BASE}/events?${base}&tag_id=${tag.id}`, opts),
+      fetch(`${GAMMA_BASE}/markets?${base}&_tag_id=${tag.id}`, opts),
+      fetch(`${GAMMA_BASE}/events?${base}&_tag_id=${tag.id}`, opts),
     );
   }
 
+  // Text search on both markets AND events — multi-outcome markets live in events
   fetches.push(
-    fetch(
-      `${GAMMA_BASE}/markets?active=true&closed=false&limit=100&q=World+Cup+2026`,
-      { next: { revalidate: 60 } },
-    ),
-    fetch(
-      `${GAMMA_BASE}/markets?active=true&closed=false&limit=100&q=FIFA+2026`,
-      { next: { revalidate: 60 } },
-    ),
+    fetch(`${GAMMA_BASE}/markets?${base}&q=World+Cup+2026`, opts),
+    fetch(`${GAMMA_BASE}/events?${base}&q=World+Cup+2026`, opts),
+    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup`, opts),
+    fetch(`${GAMMA_BASE}/events?${base}&q=FIFA+World+Cup`, opts),
   );
 
   const responses = await Promise.allSettled(fetches);
   const allMarkets: Market[] = [];
   const seen = new Set<string>();
 
+  const addMarket = (raw: Record<string, unknown>) => {
+    const m = parseMarket(raw);
+    if (m.id && !seen.has(m.id)) {
+      seen.add(m.id);
+      allMarkets.push(m);
+    }
+  };
+
   for (const result of responses) {
     if (result.status !== 'fulfilled') continue;
-    const raw = await safeJson<unknown[]>(result.value);
-    if (!raw) continue;
-    const list = Array.isArray(raw) ? raw : [];
-    for (const item of list) {
-      const m = parseMarket(item as Record<string, unknown>);
-      if (m.id && !seen.has(m.id)) {
-        seen.add(m.id);
-        allMarkets.push(m);
+    const data = await safeJson<unknown[]>(result.value);
+    if (!Array.isArray(data)) continue;
+
+    for (const item of data) {
+      const obj = item as Record<string, unknown>;
+
+      // Events wrap their markets in a `.markets` array
+      if (Array.isArray(obj.markets) && obj.markets.length > 0) {
+        for (const m of obj.markets as Record<string, unknown>[]) {
+          addMarket(m);
+        }
+      } else if (obj.id && obj.question) {
+        addMarket(obj);
       }
     }
   }
