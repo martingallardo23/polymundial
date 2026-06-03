@@ -24,6 +24,7 @@ export interface Market {
   tags?: Tag[];
   parsedTokenIds?: string[];
   category?: MarketCategory;
+  isEvent?: boolean; // true = built from a Polymarket event (multi-market group)
 }
 
 export interface OrderbookLevel {

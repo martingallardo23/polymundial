@@ -89,7 +89,7 @@ export default function MarketCard({ market, livePrices, flashingTokens }: Props
             prices={prices}
             tokenIds={market.parsedTokenIds}
             flashingTokens={flashingTokens}
-            maxRows={2}
+            maxRows={market.outcomes.length > 2 ? 4 : 2}
           />
         </div>
 

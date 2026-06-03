@@ -133,7 +133,7 @@ export default function MarketDetailClient({ market }: Props) {
       {/* Polymarket link */}
       <div className="text-center">
         <a
-          href={`https://polymarket.com/market/${market.slug}`}
+          href={`https://polymarket.com/${market.isEvent ? 'event' : 'market'}/${market.slug}`}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 text-sm text-emerald-600 hover:text-emerald-700 font-medium"

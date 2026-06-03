@@ -100,60 +100,154 @@ export async function findWorldCupTag(): Promise<Tag | null> {
   );
 }
 
+function extractOutcomeLabel(raw: Record<string, unknown>): string {
+  // Polymarket often sets groupItemTitle for markets inside an event group
+  if (raw.groupItemTitle && String(raw.groupItemTitle).trim()) {
+    return String(raw.groupItemTitle).trim();
+  }
+  const q = String(raw.question ?? '');
+  // "Will Argentina win the 2026 World Cup?" → "Argentina"
+  const m = q.match(/^Will\s+(.+?)\s+win\b/i);
+  if (m) return m[1].trim();
+  // "Argentina to win the World Cup" → "Argentina"
+  const m2 = q.match(/^(.+?)\s+to win\b/i);
+  if (m2) return m2[1].trim();
+  return q;
+}
+
+// Converts a Gamma event object (with .markets array) into a single Market entry.
+// Multi-team events like "World Cup Winner" become one multi-outcome card.
+export function eventToMarket(raw: Record<string, unknown>): Market {
+  const subMarkets = Array.isArray(raw.markets)
+    ? (raw.markets as Record<string, unknown>[]).map(parseMarket)
+    : [];
+
+  if (subMarkets.length === 1) {
+    // Single-market event: just return the inner market but keep event slug
+    return {
+      ...subMarkets[0],
+      slug: String(raw.slug ?? subMarkets[0].slug),
+      isEvent: true,
+    };
+  }
+
+  if (subMarkets.length === 0) {
+    // No markets nested — parse the event itself as if it were a market
+    return { ...parseMarket(raw), isEvent: true };
+  }
+
+  // Multi-market event: build a synthetic multi-outcome market
+  const rawMarkets = raw.markets as Record<string, unknown>[];
+  const outcomes = rawMarkets.map(extractOutcomeLabel);
+  const outcomePrices = subMarkets.map((m) => m.outcomePrices[0] ?? '0');
+  const parsedTokenIds = subMarkets
+    .map((m) => m.parsedTokenIds?.[0] ?? '')
+    .filter(Boolean);
+
+  const totalVolume =
+    subMarkets.reduce((s, m) => s + m.volume, 0) ||
+    Number(raw.volume ?? raw.volumeNum ?? 0);
+  const totalLiquidity = subMarkets.reduce((s, m) => s + m.liquidity, 0);
+
+  const rawVol = raw.volume ?? raw.volumeNum ?? 0;
+  const volume = totalVolume || (typeof rawVol === 'string' ? parseFloat(rawVol) : Number(rawVol));
+
+  return {
+    id: String(raw.id ?? ''),
+    question: String(raw.title ?? raw.question ?? ''),
+    slug: String(raw.slug ?? ''),
+    description: raw.description ? String(raw.description) : undefined,
+    clobTokenIds: '[]',
+    outcomes,
+    outcomePrices,
+    volume,
+    liquidity: totalLiquidity,
+    endDate: String(raw.endDate ?? subMarkets[0]?.endDate ?? ''),
+    active: subMarkets.some((m) => m.active),
+    closed: subMarkets.every((m) => m.closed),
+    image: raw.image ? String(raw.image) : undefined,
+    icon: raw.icon ? String(raw.icon) : undefined,
+    parsedTokenIds,
+    category: detectCategory(String(raw.title ?? raw.question ?? '')),
+    isEvent: true,
+  };
+}
+
 export async function getWorldCupMarkets(): Promise<Market[]> {
   const tag = await findWorldCupTag();
 
   const opts = { next: { revalidate: 60 } };
-  // Ask the API to sort by volume so first pages are the most traded
   const base = 'active=true&closed=false&limit=100&order=volume&ascending=false';
-  const fetches: Promise<Response>[] = [];
+
+  // Events first — they group multi-team markets correctly
+  const eventFetches: Promise<Response>[] = [];
+  const marketFetches: Promise<Response>[] = [];
 
   if (tag) {
-    // Try several tag parameter names — Gamma API isn't consistent across versions
-    fetches.push(
-      fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${tag.id}`, opts),
+    eventFetches.push(
       fetch(`${GAMMA_BASE}/events?${base}&tag_id=${tag.id}`, opts),
-      fetch(`${GAMMA_BASE}/markets?${base}&_tag_id=${tag.id}`, opts),
       fetch(`${GAMMA_BASE}/events?${base}&_tag_id=${tag.id}`, opts),
+    );
+    marketFetches.push(
+      fetch(`${GAMMA_BASE}/markets?${base}&tag_id=${tag.id}`, opts),
     );
   }
 
-  // Text search on both markets AND events — multi-outcome markets live in events
-  fetches.push(
-    fetch(`${GAMMA_BASE}/markets?${base}&q=World+Cup+2026`, opts),
+  eventFetches.push(
     fetch(`${GAMMA_BASE}/events?${base}&q=World+Cup+2026`, opts),
-    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup`, opts),
     fetch(`${GAMMA_BASE}/events?${base}&q=FIFA+World+Cup`, opts),
   );
+  marketFetches.push(
+    fetch(`${GAMMA_BASE}/markets?${base}&q=World+Cup+2026`, opts),
+    fetch(`${GAMMA_BASE}/markets?${base}&q=FIFA+World+Cup`, opts),
+  );
 
-  const responses = await Promise.allSettled(fetches);
+  const [eventResults, marketResults] = await Promise.all([
+    Promise.allSettled(eventFetches),
+    Promise.allSettled(marketFetches),
+  ]);
+
   const allMarkets: Market[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(); // tracks event IDs + constituent market IDs
 
-  const addMarket = (raw: Record<string, unknown>) => {
-    const m = parseMarket(raw);
-    if (m.id && !seen.has(m.id)) {
-      seen.add(m.id);
-      allMarkets.push(m);
-    }
-  };
-
-  for (const result of responses) {
+  // Pass 1: events (take priority — shown as grouped multi-outcome cards)
+  for (const result of eventResults) {
     if (result.status !== 'fulfilled') continue;
     const data = await safeJson<unknown[]>(result.value);
     if (!Array.isArray(data)) continue;
 
     for (const item of data) {
       const obj = item as Record<string, unknown>;
+      const eventId = String(obj.id ?? '');
+      if (!eventId || seen.has(eventId)) continue;
 
-      // Events wrap their markets in a `.markets` array
-      if (Array.isArray(obj.markets) && obj.markets.length > 0) {
+      seen.add(eventId);
+      // Mark all constituent market IDs so pass 2 skips them
+      if (Array.isArray(obj.markets)) {
         for (const m of obj.markets as Record<string, unknown>[]) {
-          addMarket(m);
+          const mid = String((m as Record<string, unknown>).id ?? '');
+          if (mid) seen.add(mid);
         }
-      } else if (obj.id && obj.question) {
-        addMarket(obj);
       }
+
+      const market = eventToMarket(obj);
+      if (market.question) allMarkets.push(market);
+    }
+  }
+
+  // Pass 2: individual markets not already covered by an event
+  for (const result of marketResults) {
+    if (result.status !== 'fulfilled') continue;
+    const data = await safeJson<unknown[]>(result.value);
+    if (!Array.isArray(data)) continue;
+
+    for (const item of data) {
+      const obj = item as Record<string, unknown>;
+      const id = String(obj.id ?? '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const m = parseMarket(obj);
+      if (m.question) allMarkets.push(m);
     }
   }
 
@@ -161,21 +255,38 @@ export async function getWorldCupMarkets(): Promise<Market[]> {
 }
 
 export async function getMarketBySlug(slug: string): Promise<Market | null> {
-  const res = await fetch(`${GAMMA_BASE}/markets/${slug}`, {
-    next: { revalidate: 30 },
-  });
-  if (res.ok) {
-    const raw = await safeJson<Record<string, unknown>>(res);
-    if (raw) return parseMarket(raw);
-  }
+  const opts = { next: { revalidate: 30 } };
+  const s = encodeURIComponent(slug);
 
-  const res2 = await fetch(
-    `${GAMMA_BASE}/markets?slug=${encodeURIComponent(slug)}&limit=1`,
-    { next: { revalidate: 30 } },
-  );
-  const data = await safeJson<unknown>(res2);
-  const list = Array.isArray(data) ? data : [];
-  if (list.length > 0) return parseMarket(list[0] as Record<string, unknown>);
+  const [mDirect, eDirect, mQuery, eQuery] = await Promise.allSettled([
+    fetch(`${GAMMA_BASE}/markets/${slug}`, opts),
+    fetch(`${GAMMA_BASE}/events/${slug}`, opts),
+    fetch(`${GAMMA_BASE}/markets?slug=${s}&limit=1`, opts),
+    fetch(`${GAMMA_BASE}/events?slug=${s}&limit=1`, opts),
+  ]);
+
+  // Try direct market
+  if (mDirect.status === 'fulfilled' && mDirect.value.ok) {
+    const raw = await safeJson<Record<string, unknown>>(mDirect.value);
+    if (raw?.id) return parseMarket(raw);
+  }
+  // Try direct event
+  if (eDirect.status === 'fulfilled' && eDirect.value.ok) {
+    const raw = await safeJson<Record<string, unknown>>(eDirect.value);
+    if (raw?.id) return eventToMarket(raw);
+  }
+  // Try market query
+  if (mQuery.status === 'fulfilled') {
+    const data = await safeJson<unknown[]>(mQuery.value);
+    if (Array.isArray(data) && data.length > 0)
+      return parseMarket(data[0] as Record<string, unknown>);
+  }
+  // Try event query
+  if (eQuery.status === 'fulfilled') {
+    const data = await safeJson<unknown[]>(eQuery.value);
+    if (Array.isArray(data) && data.length > 0)
+      return eventToMarket(data[0] as Record<string, unknown>);
+  }
 
   return null;
 }
