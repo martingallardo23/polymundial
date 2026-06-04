@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import type { Market } from '@/lib/types';
+import type { Market, Tag } from '@/lib/types';
 import ProbabilityBar from './ProbabilityBar';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -9,6 +9,22 @@ const CATEGORY_LABELS: Record<string, string> = {
   group: 'Grupos',
   other: 'General',
 };
+
+// Tags to never show (internal Polymarket tags, too generic, or hidden)
+const HIDDEN_TAG_SLUGS = new Set([
+  'sports', 'hide-from-new', 'politics', 'new', 'featured',
+]);
+const HIDDEN_TAG_IDS = new Set(['1']); // Sports (forceHide: true)
+
+function visibleTags(tags: Tag[] | undefined): Tag[] {
+  if (!tags?.length) return [];
+  return tags.filter(
+    (t) =>
+      !HIDDEN_TAG_SLUGS.has(t.slug) &&
+      !HIDDEN_TAG_IDS.has(String(t.id)) &&
+      !(t as unknown as Record<string, unknown>).forceHide,
+  );
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   champion: 'bg-amber-100 text-amber-800',
@@ -75,6 +91,14 @@ export default function MarketCard({ market, livePrices, flashingTokens }: Props
               Resuelto
             </span>
           )}
+          {visibleTags(market.tags).map((tag) => (
+            <span
+              key={tag.id}
+              className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200"
+            >
+              {tag.label}
+            </span>
+          ))}
         </div>
 
         {/* Question */}
