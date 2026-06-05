@@ -21,7 +21,7 @@ function detectCategory(question: string): MarketCategory {
     return 'champion';
   if (/golden boot|top scorer|most goals|goal scorer|goleador/i.test(q))
     return 'goalscorer';
-  if (/advance|qualify|group [a-h]|round of|knockout|qualify from/i.test(q))
+  if (/advance|qualify|group [a-p]|round of|knockout|qualify from/i.test(q))
     return 'group';
   if (/ vs |beat |defeat |win against|match result| v /i.test(q)) return 'match';
   return 'other';
