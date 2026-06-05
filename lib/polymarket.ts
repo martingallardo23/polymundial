@@ -101,8 +101,10 @@ function isWorldCupItem(market: Market): boolean {
   if (market.tags?.some((t) => WC_TAG_IDS.has(String(t.id)) || WC_TAG_SLUGS.test(t.slug))) {
     return true;
   }
-  // No WC-specific tag: accept if title clearly refers to the World Cup
-  // (covers markets tagged only with Soccer/Sports but still WC-related)
+  // Soccer-tagged items (id 100350) came from our Soccer+WC text queries;
+  // the API already filtered their text for "World Cup" / "FIFA 2026".
+  if (market.tags?.some((t) => String(t.id) === '100350')) return true;
+  // No tags or unrecognised tags: require title match
   return WC_TITLE.test(market.question);
 }
 
