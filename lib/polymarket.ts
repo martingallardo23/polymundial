@@ -92,8 +92,9 @@ export async function fetchTags(): Promise<Tag[]> {
 // Tag IDs confirmed via /api/debug on the live Gamma API
 const WC_TAG_IDS = new Set(['102232', '102350']); // "FIFA World Cup", "2026 FIFA World Cup"
 const WC_TAG_SLUGS = /2026.fifa|fifa.world.cup/i;
-// Title regex — catches markets tagged only with Soccer (100350) but about the WC
-const WC_TITLE = /world.cup|mundial|(fifa|2026).*(cup|world)|(cup|world).*(fifa|2026)/i;
+// Title regex — "world cup" as consecutive words, "mundial", or FIFA (soccer governing body only)
+// Deliberately tight: avoids "Stanley Cup", "World Series", "MLS Cup", etc.
+const WC_TITLE = /\bworld\s+cup\b|mundial|\bfifa\b/i;
 
 function isWorldCupItem(market: Market): boolean {
   // Explicit World Cup tag → always pass
